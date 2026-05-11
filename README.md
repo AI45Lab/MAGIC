@@ -15,6 +15,9 @@
   <a href="assets/MAGIC_arxiv.pdf"><img src="https://img.shields.io/badge/Paper-PDF-red" alt="Paper"></a>
 </p>
 
+# 🔥 News
+[May. 2026] Our paper have been accepeted by ICML2026!
+
 # 🤗 Overview
 <!-- ![MAGIC](./assets/MAGIC.png) -->
 <p align="center">
