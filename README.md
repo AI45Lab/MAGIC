@@ -16,7 +16,7 @@
 </p>
 
 # 🔥 News
-[Aug. 26, 2026] We added the attacker SFT model weights to Hugging Face: [Llama3.1-8B-Instruct](https://huggingface.co/XiaoyuWen/MAGIC-attacker-sft-Llama3.1-8B-Instruct), [Qwen2.5-7B-Instruct](https://huggingface.co/XiaoyuWen/MAGIC-attacker-sft-Qwen2.5-7B-Instruct), and [Qwen2.5-14B-Instruct](https://huggingface.co/XiaoyuWen/MAGIC-attacker-sft-Qwen2.5-14B-Instruct).
+[Aug. 2026] We added the attacker SFT model weights to Hugging Face: [Llama3.1-8B-Instruct](https://huggingface.co/XiaoyuWen/MAGIC-attacker-sft-Llama3.1-8B-Instruct), [Qwen2.5-7B-Instruct](https://huggingface.co/XiaoyuWen/MAGIC-attacker-sft-Qwen2.5-7B-Instruct), and [Qwen2.5-14B-Instruct](https://huggingface.co/XiaoyuWen/MAGIC-attacker-sft-Qwen2.5-14B-Instruct).
 
 [May. 2026] Our paper have been accepeted by ICML2026!
 
