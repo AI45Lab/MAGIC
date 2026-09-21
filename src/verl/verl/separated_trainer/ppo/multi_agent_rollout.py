@@ -13,6 +13,7 @@ import unicodedata
 
 from verl.utils.reward_score.game import (
     extract_answer,
+    visible_attack,
     extract_think,
     compute_score_components,
 )
@@ -262,7 +263,7 @@ class MultiAgentRollout:
                     attacker_visible = last_attacker_msg.get("content", "")
                 if attacker_visible is None:
                     attacker_visible = prompt_vars.get("attacker_template") or prompt_vars.get("seed_prompt") or prompt_vars.get("question", "")
-                attacker_answer = (extract_answer(attacker_visible) or attacker_visible).strip()
+                attacker_answer = visible_attack(attacker_visible, prompt_vars.get("seed_prompt") or prompt_vars.get("question", ""))
                 attacker_think = (extract_think(attacker_visible) or "").strip()
                 prompt_vars["attacker_prompt"] = attacker_answer
                 prompt_vars["attacker_think"] = attacker_think
@@ -272,7 +273,7 @@ class MultiAgentRollout:
                     msg = dict(hist[j])
                     if msg.get("role") == agent_roles[0]:
                         # hide attacker's think when replaying history to defender
-                        msg["content"] = (extract_answer(msg.get("content", "")) or msg.get("content", "")).strip()
+                        msg["content"] = visible_attack(msg.get("content", ""), prompt_vars.get("seed_prompt") or prompt_vars.get("question", ""))
                     if (j + 1) % 2 == 0:
                         chat_lst[i].append({"role": "assistant", "content": msg["content"]})
                     else:
@@ -469,7 +470,7 @@ class MultiAgentRollout:
                         clean_output = adversarial_prompt
                         adv_used = True
                     elif self.fallback_to_adversarial_on_harmful_rewrite and self._is_benign_source(problem_inputs[idx]):
-                        attacker_visible = (extract_answer(clean_output) or clean_output).strip()
+                        attacker_visible = visible_attack(clean_output, seed_prompt)
                         if self._attacker_prompt_is_harmful(attacker_visible, problem_inputs[idx]):
                             clean_output = adversarial_prompt
                             adv_used = True
@@ -479,7 +480,7 @@ class MultiAgentRollout:
                 "content": clean_output,
                 "num_gen_tokens": num_gen_tokens[i],
                 "stop_reason": stop_reasons[i],
-                "parsed_answer": (extract_answer(clean_output) or clean_output).strip(),
+                "parsed_answer": visible_attack(clean_output, seed_prompt) if role == agent_roles[0] else (extract_answer(clean_output) or clean_output).strip(),
             }
             if role == agent_roles[0]:
                 history_entry["parsed_think"] = (extract_think(clean_output) or "").strip()

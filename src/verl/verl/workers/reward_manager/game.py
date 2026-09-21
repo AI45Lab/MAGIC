@@ -24,6 +24,7 @@ from verl.utils.reward_score.game import (
     RewardScores,
     format_reward_func,
     extract_answer,
+    visible_attack,
     extract_think,
     # revision_reward_func,
     compute_reward_bundle,
@@ -62,7 +63,7 @@ def _get_visible_answer(msg: Optional[Dict[str, str]], *, answer_only: bool) -> 
     content = (msg.get('content', '') or '').strip()
     if not answer_only:
         return content
-    return (msg.get('parsed_answer') or extract_answer(content) or content).strip()
+    return (msg.get('parsed_answer') or visible_attack(content)).strip()
 
 
 def _normalize_format_reward_roles(format_reward_roles, train_roles):
@@ -317,6 +318,12 @@ class GameRewardManager:
             label_reward = score_components.label_reward
             num_turns = data_item.non_tensor_batch['num_turns']
             format_bonus = 0.0
+            last_attacker_msg = _get_last_role_message(valid_history, 'attacker')
+            attacker_format_invalid = (
+                data_source == 'game'
+                and last_attacker_msg is not None
+                and compute_format_r(data_source, 'attacker', last_attacker_msg['content']) < 0
+            )
 
             train_roles = data_item.meta_info.get('train_roles', agent_roles)
             format_reward_roles = _normalize_format_reward_roles(
@@ -327,6 +334,8 @@ class GameRewardManager:
                 turn_finished = data_item.batch[f'{role}_turn_finished'].item()
                 if role == 'attacker':
                     role_score = -base_score + revision_score + label_reward
+                    if attacker_format_invalid:
+                        role_score = 0.0
                 else:
                     role_score = base_score + defender_quality_score
                 if data_item.meta_info['mask_unfinished_reward']:
