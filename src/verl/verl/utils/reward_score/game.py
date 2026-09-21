@@ -105,6 +105,19 @@ def extract_think(text: str) -> str | None:
         return match.group(1).strip()
     return ""
 
+
+_ROLE_TAG_RE = re.compile(r'</?(?:think|answer)>')
+
+
+def visible_attack(text, seed=""):
+    """Return only a valid visible attack, or the seed for malformed tagged output."""
+    text = (text or "").strip()
+    if not _ROLE_TAG_RE.search(text):
+        return text or (seed or "").strip()
+    if format_reward_func(text) < 0:
+        return (seed or "").strip()
+    return extract_answer(text) or (seed or "").strip()
+
 def _clamp_unit_interval(value: float) -> float:
     return max(0.0, min(1.0, value))
 
@@ -292,7 +305,7 @@ def format_reward_func(solution_str):
     if counts != (1, 1, 1, 1):
         return -FORMAT_REWARD_VALUE
 
-    pattern = r"^<think>[\s\S]*?</think>\s*<answer>[\s\S]*?</answer>$"
+    pattern = r"^<think>\s*\S[\s\S]*?</think>\s*<answer>\s*\S[\s\S]*?</answer>$"
     if re.search(pattern, text, re.DOTALL):
         return FORMAT_REWARD_VALUE
     return -FORMAT_REWARD_VALUE
