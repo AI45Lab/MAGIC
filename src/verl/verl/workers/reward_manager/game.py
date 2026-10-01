@@ -23,6 +23,7 @@ from verl import DataProto
 from verl.utils.reward_score.game import (
     RewardScores,
     format_reward_func,
+    mask_invalid_attacker_task,
     extract_answer,
     visible_attack,
     extract_think,
@@ -304,6 +305,23 @@ class GameRewardManager:
             dtype=torch.float32,
         )
         format_rewards = torch.zeros(len(data), dtype=torch.float32)
+        # invalid rewrites are excluded from the task-reward update (see mask_invalid_attacker_task)
+        attacker_invalid = []
+        for i_bsz in range(len(data)):
+            data_item = data[i_bsz]
+            last_attacker_msg = _get_last_role_message(
+                _filter_valid_history(data_item.non_tensor_batch['history'], agent_roles), 'attacker')
+            attacker_invalid.append(
+                data_item.non_tensor_batch['data_source'] == 'game'
+                and last_attacker_msg is not None
+                and compute_format_r('game', 'attacker', last_attacker_msg['content']) < 0
+            )
+        attacker_task = mask_invalid_attacker_task(
+            [-s.safety + s.revision + s.label_reward for s in score_bundles],
+            attacker_invalid,
+            [True] * len(score_bundles),
+            data.non_tensor_batch.get('uid', range(len(data))),
+        )
         for i_bsz in range(len(data)):
             data_item = data[i_bsz]
             valid_history = _filter_valid_history(data_item.non_tensor_batch['history'], agent_roles)
@@ -313,17 +331,9 @@ class GameRewardManager:
             data_source = data_item.non_tensor_batch['data_source']
             score_components = score_bundles[i_bsz]
             base_score = score_components.safety
-            revision_score = score_components.revision
             defender_quality_score = score_components.defender_quality
-            label_reward = score_components.label_reward
             num_turns = data_item.non_tensor_batch['num_turns']
             format_bonus = 0.0
-            last_attacker_msg = _get_last_role_message(valid_history, 'attacker')
-            attacker_format_invalid = (
-                data_source == 'game'
-                and last_attacker_msg is not None
-                and compute_format_r(data_source, 'attacker', last_attacker_msg['content']) < 0
-            )
 
             train_roles = data_item.meta_info.get('train_roles', agent_roles)
             format_reward_roles = _normalize_format_reward_roles(
@@ -333,9 +343,7 @@ class GameRewardManager:
             for role in agent_roles:
                 turn_finished = data_item.batch[f'{role}_turn_finished'].item()
                 if role == 'attacker':
-                    role_score = -base_score + revision_score + label_reward
-                    if attacker_format_invalid:
-                        role_score = 0.0
+                    role_score = attacker_task[i_bsz]
                 else:
                     role_score = base_score + defender_quality_score
                 if data_item.meta_info['mask_unfinished_reward']:
