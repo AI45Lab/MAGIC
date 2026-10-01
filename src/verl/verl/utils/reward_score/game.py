@@ -310,6 +310,24 @@ def format_reward_func(solution_str):
         return FORMAT_REWARD_VALUE
     return -FORMAT_REWARD_VALUE
 
+def mask_invalid_attacker_task(task, invalid, usable, groups):
+    """Task reward per attacker sample, with every invalid rewrite set to the mean of the usable valid rewrites of the
+    same group (same seed), so it adds no task-reward signal under grpo and only the format penalty tells it apart.
+    The seed-prompt outcome the defender saw is not evidence about an invalid rewrite. A fixed 0 is not neutral: it
+    beats a valid rewrite the defender wins (-1.5), so breaking the format pays unless the format reward exceeds 0.75."""
+    task = list(task)
+    by_group = {}
+    for i, g in enumerate(groups):
+        by_group.setdefault(g, []).append(i)
+    for idxs in by_group.values():
+        valid = [task[i] for i in idxs if not invalid[i] and usable[i]]
+        fill = sum(valid) / len(valid) if valid else 0.0
+        for i in idxs:
+            if invalid[i]:
+                task[i] = fill
+    return task
+
+
 def _prepare_reward_model_response(defender_response: str) -> str:
     """Return the text that should be sent to the reward model based on the configured trigger."""
 
