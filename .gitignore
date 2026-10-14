@@ -2,3 +2,7 @@ outputs/
 logs/
 wandb/
 checkpoints/
+
+# Python artifacts for model compatibility utilities
+__pycache__/
+*.pyc

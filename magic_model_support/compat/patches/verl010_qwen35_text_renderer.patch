@@ -1,0 +1,12 @@
+--- vllm_async_server.py.orig
++++ vllm_async_server.py
+@@ -444,6 +444,9 @@
+         if "disable_log_stats" in fn_args:
+             kwargs["disable_log_stats"] = engine_args.disable_log_stats
+ 
++        from sitecustomize import prepare_qwen35_text_vllm_config
++        prepare_qwen35_text_vllm_config(vllm_config)
++
+         engine_client = AsyncLLM.from_vllm_config(vllm_config=vllm_config, usage_context=usage_context, **kwargs)
+ 
+         # Don't keep the dummy data in memory

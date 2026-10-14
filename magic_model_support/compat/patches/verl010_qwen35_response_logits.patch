@@ -1,0 +1,145 @@
+--- transformer_impl.py.orig
++++ transformer_impl.py
+@@ -1278,6 +1278,45 @@
+                     "attention_mask": attention_mask,
+                     "position_ids": position_ids,
+                 }
++
++                # Qwen3.5 exposes the official ``logits_to_keep`` forward argument.
++                # MAGIC only trains on response tokens, so materializing the LM head
++                # for every prompt token wastes tens of GiB on long contexts.  Keep
++                # the smallest shared position interval covering every response in
++                # this dynamic micro-batch; prepare_model_outputs slices each sample
++                # back to its exact response range below.
++                if os.environ.get("MAGIC_RESPONSE_ONLY_LOGITS") == "1":
++                    prompts = micro_batch["prompts"]
++                    responses = micro_batch["responses"]
++                    if prompts.is_nested:
++                        prompt_lengths_tensor = prompts.offsets().diff()
++                        response_lengths_tensor = responses.offsets().diff()
++                    else:
++                        attention_mask = micro_batch["attention_mask"]
++                        prompt_width = prompts.shape[1]
++                        prompt_lengths_tensor = attention_mask[:, :prompt_width].sum(dim=1)
++                        response_lengths_tensor = attention_mask[:, prompt_width:].sum(dim=1)
++                    prompt_lengths = [int(value) for value in prompt_lengths_tensor.cpu().tolist()]
++                    response_lengths = [int(value) for value in response_lengths_tensor.cpu().tolist()]
++                    if any(length <= 0 for length in prompt_lengths + response_lengths):
++                        raise RuntimeError(
++                            "MAGIC response-only logits require non-empty prompts and responses, got "
++                            f"prompt_lengths={prompt_lengths}, response_lengths={response_lengths}"
++                        )
++                    keep_start = min(length - 1 for length in prompt_lengths)
++                    keep_stop = max(
++                        prompt_length + response_length - 1
++                        for prompt_length, response_length in zip(prompt_lengths, response_lengths, strict=True)
++                    )
++                    model_inputs["logits_to_keep"] = torch.arange(
++                        keep_start,
++                        keep_stop,
++                        device=input_ids.device,
++                        dtype=torch.long,
++                    )
++                    output_args["magic_response_logit_start"] = keep_start
++                    output_args["magic_prompt_lengths"] = prompt_lengths
++                    output_args["magic_response_lengths"] = response_lengths
+ 
+             else:
+                 raise NotImplementedError(f"pad_mode {pad_mode} not implemented")
+@@ -1320,7 +1359,96 @@
+         model_output = {}
+ 
+         input_ids = micro_batch["input_ids"]
++
++        if "magic_response_logit_start" in output_args:
++            if use_remove_padding or use_fused_kernels:
++                raise RuntimeError("MAGIC response-only logits require the padded, non-fused forward path")
++            if distillation_use_topk or distillation_only or calculate_sum_pi_squared:
++                raise RuntimeError(
++                    "MAGIC response-only logits currently supports PPO log-prob/entropy outputs only"
++                )
++
++            logits = output.logits
++            if isinstance(logits, DTensor):
++                logits = logits.full_tensor()
++            if logits.ndim != 3:
++                raise RuntimeError(f"expected response logits [batch, positions, vocab], got {logits.shape}")
++
++            keep_start = output_args["magic_response_logit_start"]
++            prompt_lengths = output_args["magic_prompt_lengths"]
++            response_lengths = output_args["magic_response_lengths"]
++            responses = micro_batch["responses"]
++            response_ids = responses.unbind()
++            temperatures = output_args["temperature"]
++            if len(prompt_lengths) != logits.shape[0] or len(response_ids) != logits.shape[0]:
++                raise RuntimeError(
++                    f"response metadata batch does not match logits batch {logits.shape[0]}"
++                )
++
++            log_prob_pieces = []
++            entropy_pieces = []
++            for batch_index, (prompt_length, response_length, labels) in enumerate(
++                zip(prompt_lengths, response_lengths, response_ids, strict=True)
++            ):
++                response_start = prompt_length - 1 - keep_start
++                response_stop = response_start + response_length
++                response_logits = logits[batch_index, response_start:response_stop]
++                labels = labels[:response_length]
++                if response_logits.shape[0] != response_length or labels.numel() != response_length:
++                    raise RuntimeError(
++                        "response-only logits alignment failed: "
++                        f"sample={batch_index}, logits={response_logits.shape[0]}, labels={labels.numel()}"
++                    )
++                temperature = temperatures[batch_index]
++                if not bool((temperature == 1).item()):
++                    response_logits = response_logits / temperature.clamp(min=1e-8).to(response_logits.dtype)
+ 
++                response_log_probs = logprobs_from_logits(
++                    logits=response_logits,
++                    labels=labels,
++                    inplace_backward=not calculate_entropy,
++                )
++                log_prob_pieces.append(
++                    torch.cat(
++                        (
++                            response_log_probs.new_zeros(prompt_length - 1),
++                            response_log_probs,
++                            response_log_probs.new_zeros(1),
++                        )
++                    )
++                )
++
++                if calculate_entropy:
++                    if not self.engine_config.entropy_checkpointing:
++                        if self.engine_config.entropy_from_logits_with_chunking:
++                            response_entropy = self.compute_entropy_from_logits(
++                                response_logits,
++                                chunk_size=self.engine_config.entropy_from_logits_chunk_size,
++                            )
++                        else:
++                            response_entropy = self.compute_entropy_from_logits(response_logits)
++                    else:
++                        response_entropy = torch.utils.checkpoint.checkpoint(
++                            self.compute_entropy_from_logits, response_logits
++                        )
++                    entropy_pieces.append(
++                        torch.cat(
++                            (
++                                response_entropy.new_zeros(prompt_length - 1),
++                                response_entropy,
++                                response_entropy.new_zeros(1),
++                            )
++                        )
++                    )
++
++            cu_seqlens = input_ids.offsets()
++            log_probs = torch.nested.nested_tensor_from_jagged(torch.cat(log_prob_pieces), cu_seqlens)
++            model_output["log_probs"] = log_probs
++            if calculate_entropy:
++                entropy = torch.nested.nested_tensor_from_jagged(torch.cat(entropy_pieces), cu_seqlens)
++                model_output["entropy"] = entropy
++            return model_output
++
+         if use_remove_padding:
+             input_ids_rmpad_rolled = output_args["input_ids_rmpad_rolled"]
+             temperature_rmpad = output_args["temperature_rmpad"]

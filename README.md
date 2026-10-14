@@ -88,6 +88,12 @@ pip install -e .
 pip install -r requirements.txt
 ```
 
+## Additional model support
+
+[Qwen3.6-27B and Ministral model adapters](magic_model_support/README.md)
+([中文说明](magic_model_support/README.zh-CN.md)) provide model loading,
+chat-template, checkpoint-conversion, and runtime compatibility utilities.
+
 # ✈️ Training & Evalution
 
 ## How to run scripts
