@@ -5,8 +5,8 @@
 This module provides model-level compatibility utilities for **Qwen3.6-27B** and
 **Ministral-3-14B-Reasoning-2512** in MAGIC: model loading, SFT token alignment,
 checkpoint conversion, native reasoning serialization, and targeted runtime
-patches. The utilities can be integrated into a caller's training or serving
-entry point; they do not replace MAGIC's trainer.
+patches. Complete SFT, MAGIC RL, serving, and evaluation commands are available in the
+[workflow guide](WORKFLOWS.md).
 
 ## Supported components
 
@@ -36,8 +36,8 @@ runtime explicitly; a normal dependency-resolved install of vLLM alone is
 insufficient. The source patches are version-specific, not universal patches
 for arbitrary newer releases.
 
-CPU tests need Python 3.12, PyTorch, Transformers 5.3.0, and safetensors. Runtime
-model loading additionally requires CUDA and the appropriate model dependencies.
+The complete execution environment uses Python 3.12, PyTorch 2.10.0,
+Transformers 5.5.3, safetensors, CUDA, and the appropriate model dependencies.
 
 ## Model loading and SFT token alignment
 
@@ -106,8 +106,8 @@ fails on a noncanonical record before writing output. It preserves record count
 and order; it does not select samples or define dataset splits.
 
 To normalize a merged Ministral checkpoint, run the following on the exported
-model directory. It updates that directory in place and currently accepts a
-single `model.safetensors` file:
+model directory. It updates that directory in place and accepts single-file
+or sharded safetensors checkpoints:
 
 ```bash
 python -m magic_model_support.compat.normalize_ministral3_merged \
@@ -185,18 +185,5 @@ uses a text-only model view and architecture-specific vLLM configuration. The
 memory helpers reduce intermediate vocabulary-logit allocations while preserving
 the corresponding log-probability and entropy calculations.
 
-MAGIC's existing trainer and reward implementation are unchanged. These utilities
-provide integration points; they do not automatically add either model to the
-original launch script.
-
-## Tests
-
-```bash
-python -m unittest discover -s magic_model_support/tests -t . -v
-```
-
-Tests cover template alignment, native reasoning serialization, checkpoint views,
-LM-head preservation, weight-name mapping, and memory-helper values/gradients.
-The Qwen export test loads a real small Hugging Face model and checks exact
-weight equality. Ministral loader dispatch uses mocked loading calls. These CPU
-tests validate adapter logic, not full CUDA/distributed execution.
+MAGIC's existing trainer and reward implementation are unchanged. The additional modern-runtime entry points are described in the
+[workflow guide](WORKFLOWS.md); the original launcher retains its original runtime.

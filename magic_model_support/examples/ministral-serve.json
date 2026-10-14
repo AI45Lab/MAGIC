@@ -1,0 +1,13 @@
+{
+  "model_family": "ministral",
+  "model_path": "/models/Ministral-3-14B-Reasoning-2512",
+  "served_model_name": "ministral",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "tensor_parallel_size": 1,
+  "max_model_len": 8192,
+  "gpu_memory_utilization": 0.8,
+  "cuda_visible_devices": [
+    0
+  ]
+}

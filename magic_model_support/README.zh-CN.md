@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-本模块为 MAGIC 提供 **Qwen3.6-27B** 和 **Ministral-3-14B-Reasoning-2512** 的模型级兼容工具，包含模型加载、SFT token 对齐、checkpoint 转换、原生 reasoning 序列化，以及必要的运行时补丁。调用方可将这些工具接入训练或服务入口。
+本模块为 MAGIC 提供 **Qwen3.6-27B** 和 **Ministral-3-14B-Reasoning-2512** 的模型级兼容工具，包含模型加载、SFT token 对齐、checkpoint 转换、原生 reasoning 序列化，以及必要的运行时补丁。完整的 SFT、MAGIC RL、推理和评测命令见[训练与评测入口](WORKFLOWS.zh-CN.md)。
 
 ## 支持范围
 
@@ -24,7 +24,7 @@
 
 vLLM 0.18.0 的依赖元数据要求 `transformers<5`，而本适配需要 Transformers 5 的模型 API，因此需要明确配置兼容的隔离环境；仅通过常规依赖解析安装 vLLM 并不足够。补丁面向指定源码版本，不能直接视为适用于任意新版本。
 
-CPU 测试需要 Python 3.12、PyTorch、Transformers 5.3.0 和 safetensors。实际模型加载还需要 CUDA 及对应模型依赖。
+完整执行环境使用 Python 3.12、PyTorch 2.10.0、Transformers 5.5.3 和 safetensors，并需要 CUDA 及对应模型依赖。
 
 ## 模型加载与 SFT token 对齐
 
@@ -81,7 +81,7 @@ python -m magic_model_support.scripts.prepare_ministral_reasoning_sft \
 
 转换器保留源文件，将规范的尖括号标签转换为原生 reasoning 标记，加入指定的官方 system prompt，遇到不符合格式的记录会在写出前报错。转换保持样本数量和顺序，不决定样本筛选或数据划分。
 
-对导出的 Ministral 模型目录执行以下命令，可规范合并后的权重名称。该操作会原地更新指定目录，目前支持单个 `model.safetensors` 文件：
+对导出的 Ministral 模型目录执行以下命令，可规范合并后的权重名称。该操作会原地更新指定目录，支持单个或分片 safetensors checkpoint：
 
 ```bash
 python -m magic_model_support.compat.normalize_ministral3_merged \
@@ -140,12 +140,4 @@ export MAGIC_MINISTRAL_TEXT_ONLY_SYNC_PATCH=1
 
 改动集中在模型加载与配置、token 序列化和 checkpoint 参数名称转换。Ministral 在 tokenizer 边界使用原生 reasoning 表示；Qwen 使用纯文本模型视图和对应的 vLLM 配置。显存辅助函数减少中间词表 logits 的分配，同时保留对应的 log-probability 和 entropy 计算。
 
-MAGIC 现有 trainer 和 reward 实现保持不变。这些工具提供模型接入点，不会自动让原有启动脚本支持两个新模型。
-
-## 测试
-
-```bash
-python -m unittest discover -s magic_model_support/tests -t . -v
-```
-
-测试覆盖模板对齐、原生 reasoning 序列化、checkpoint 视图、LM head 保留、权重名称映射，以及显存辅助函数的数值和梯度。Qwen 导出测试真实加载一个小型 Hugging Face 模型并检查权重完全一致；Ministral 加载器调用使用模拟测试。CPU 单元测试验证适配逻辑，不代表完整 CUDA/分布式执行验证。
+MAGIC 现有 trainer 和 reward 实现保持不变。新增的现代运行栈入口见[使用指南](WORKFLOWS.zh-CN.md)，原有启动脚本仍使用其原有运行栈。

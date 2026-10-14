@@ -1,0 +1,38 @@
+{
+  "model_family": "ministral",
+  "attacker_model": "/runs/ministral-sft/hf_model",
+  "defender_model": "/models/Ministral-3-14B-Reasoning-2512",
+  "train_file": "/data/train.parquet",
+  "validation_file": "/data/validation.parquet",
+  "output_dir": "/runs/ministral-magic",
+  "active_gpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "micro_batch_size_per_gpu": 1,
+  "opponent_service": {
+    "cuda_visible_devices": [
+      4,
+      5,
+      6,
+      7
+    ],
+    "port": 8001,
+    "tensor_parallel_size": 4,
+    "gpu_memory_utilization": 0.8
+  },
+  "guard": {
+    "base_url": "http://guard-host:8000/v1",
+    "model": "Qwen3Guard-Gen-8B",
+    "api_key_env": "GUARD_API_KEY"
+  },
+  "verl_overrides": [
+    "actor_rollout_ref.actor.fsdp_config.optimizer_offload=true",
+    "actor_rollout_ref.actor.fsdp_config.param_offload=true",
+    "actor_rollout_ref.actor.fsdp_config.use_torch_compile=false",
+    "actor_rollout_ref.actor.use_torch_compile=false"
+  ],
+  "system_prompt_file": "/models/Ministral-3-14B-Reasoning-2512/SYSTEM_PROMPT.txt"
+}

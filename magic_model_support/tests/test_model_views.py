@@ -62,7 +62,7 @@ class QwenModelViewTests(unittest.TestCase):
                 service_view.main()
             served_config = json.loads((served / "config.json").read_text())
             self.assertEqual(served_config["model_type"], "qwen3_5")
-            self.assertEqual(served_config["architectures"], ["Qwen3_5ForCausalLM"])
+            self.assertEqual(served_config["architectures"], ["Qwen3_5ForConditionalGeneration"])
             for filename, content in source_bytes.items():
                 self.assertEqual((source / filename).read_bytes(), content)
 

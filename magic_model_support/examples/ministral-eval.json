@@ -1,0 +1,16 @@
+{
+  "input_file": "/data/evaluation.jsonl",
+  "output_file": "/runs/ministral-answers.jsonl",
+  "endpoint": {
+    "base_url": "http://127.0.0.1:8000/v1",
+    "model": "ministral"
+  },
+  "generation": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 512
+  },
+  "concurrency": 1,
+  "system_prompt_file": "/models/Ministral-3-14B-Reasoning-2512/SYSTEM_PROMPT.txt",
+  "tokenizer_mode": "mistral"
+}

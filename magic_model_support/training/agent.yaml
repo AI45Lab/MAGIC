@@ -1,0 +1,2 @@
+- name: magic
+  _target_: magic_model_support.training.agent.MagicAgentLoop
