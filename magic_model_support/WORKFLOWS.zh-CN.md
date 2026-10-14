@@ -1,118 +1,95 @@
-# 训练、推理服务与评测
+# Qwen 与 Ministral 训练入口
 
 [English](WORKFLOWS.md)
 
-以下入口支持 Qwen3.6-27B 和 Ministral-3-14B-Reasoning-2512。请从仓库根目录运行，修改 JSON 示例中的模型路径、数据路径、输出位置与 GPU 资源。示例资源分配可以调整；实际显存需求取决于上下文长度和 batch 设置。
+SFT 使用原生 PyTorch FSDP，MAGIC 交替更新使用现代 VERL。请使用独占的 Linux/CUDA 主机：RL 脚本会重启本机 Ray 进程。命令从仓库根目录执行，路径使用绝对路径，模型和数据由调用方准备。参数使用导出的环境变量（`export NAME=value`），或作为启动命令前的环境变量赋值。
 
-## 环境安装
+## 运行环境
 
-使用 Linux、CUDA、Python 3.12 和 PyTorch 2.10.0，并为现代运行栈建立独立环境：
+兼容层面向 vLLM 0.18.0、PyTorch 2.10、Transformers 5 模型 API，以及 VERL 的 `5ba5f2f51281522150a6c1c87e3f841d1d220042` 版本（`0.10.0.dev0`）。使用相应的独立环境，不要把仓库内的 `src/verl` 加入导入路径。
 
-```bash
-python -m pip install vllm==0.18.0
-python -m pip install transformers==5.5.3 \
-  'verl @ git+https://github.com/volcengine/verl.git@5ba5f2f51281522150a6c1c87e3f841d1d220042' \
-  'ray[default]==2.54.1' accelerate httpx pyarrow
-python -m pip install flash-attn==2.8.3 --no-build-isolation
-
-python -m magic_model_support.setup_runtime --model-family qwen
-# Ministral 使用：
-# python -m magic_model_support.setup_runtime --model-family ministral
-```
-
-Transformers 5.5.3 提供此入口所需的模型 API，但超出 vLLM 0.18.0 声明的 `transformers<5` 依赖上限，因此 `pip check` 会报告该元数据冲突。兼容补丁针对上述版本，不应换成仓库内的旧版 VERL，或直接升级后端而继续套用补丁。`setup_runtime` 会修改当前独立环境内的后端源码；同一环境可依次安装两个模型的补丁。
+Transformers 5 超出 vLLM 0.18.0 声明的 `transformers<5` 上限，因此需要配套兼容补丁，不能只依赖包管理器解析依赖。Qwen 入口复制 `VERL_SNAPSHOT_SOURCE` 后在副本上应用补丁；该变量可指向已安装的 VERL 包目录或兼容源码快照。Ministral 入口在其独立环境内修改后端源码。重复应用时允许已安装的补丁，不匹配的源码会报错。
 
 ## SFT
 
-Qwen 先导出语言模型：
+输入为已经准备好的 JSON 数组，记录包含 `instruction`、`input`、`system` 和 `output`。
+
+- Qwen 的 assistant 目标使用 `<think>...</think><answer>...</answer>`。
+- Ministral 使用 `[THINK]...[/THINK]answer`，准备好的记录中应含官方 reasoning system prompt。
+
+入口不生成、划分或筛选记录。运行前设置：
+
+| 参数 | 含义 |
+|---|---|
+| `MODEL_PATH` | 原始模型 checkpoint |
+| `TRAIN_FILE`、`VALIDATION_FILE` | 已准备好的 SFT JSON 文件 |
+| `OUTPUT_DIR` | checkpoint 输出目录 |
+| `NPROC_PER_NODE` | 本机训练进程数 |
+| `CUTOFF_LEN` | token 截断长度，超长记录按此截断 |
+| `GRADIENT_ACCUMULATION_STEPS` | 梯度累积次数 |
+| `SAVE_STEPS`、`EVAL_STEPS` | 模型保存和 validation loss 计算间隔 |
+| `SEED` | 训练随机种子 |
 
 ```bash
-python -m magic_model_support.scripts.prepare_qwen35_text_only_view \
-  --source /models/Qwen3.6-27B --output /models/qwen-text
+bash magic_model_support/scripts/run_qwen_sft.sh
+# 或：
+bash magic_model_support/scripts/run_ministral_sft.sh
 ```
 
-Ministral Reasoning 先转换选定的 SFT 文件；独立的验证文件也按相同方式转换：
+可选参数包括 `EPOCHS`、`MICRO_BATCH_SIZE`、`LEARNING_RATE`、`WEIGHT_DECAY`、`WARMUP_RATIO`、`SAVE_TOTAL_LIMIT` 和 `CPU_OFFLOAD`。结果位于 `checkpoint-<step>/hf_model`，`latest_checkpoint.txt` 指向最新导出。两个模型使用同一套 FSDP 前向、loss、优化器、validation loss 和模型导出循环，通过各自的 loader 加载模型。
+
+## RL 通用参数
+
+`TRAIN_FILE` 和 `VAL_FILE` 指向已准备好的 MAGIC 格式 parquet，`GUARD_MODEL` 指向本地 Qwen3Guard checkpoint，`RUN_ROOT` 为运行输出目录，`RUN_ID` 使用唯一名称。入口不要求固定的数据集大小或 benchmark 目录结构。
+
+角色以 defender 开始交替更新，`TOTAL_MAGIC_STEPS` 必须能被 `2 * SWITCH_FREQUENCY` 整除。显式提供 `FORMAT_REWARD_VALUE`、`DATA_SEED` 和 `ROLLOUT_SEED`。根据实际 GPU 设置 micro-batch 和服务显存比例。
+
+通过 `CHECKPOINT_SAVE_CONTENTS`、`CHECKPOINT_LOAD_CONTENTS` 选择 VERL 保存/加载内容，值为 JSON 列表，例如 `["model"]` 或 `["model","optimizer","extra"]`。加载项需与 checkpoint 实际包含的状态匹配。Qwen 未显式指定加载项时，会检测是否存在 optimizer 和 extra-state 文件。
+
+## Qwen RL
+
+在两台独占主机运行同一脚本，共享代码、checkpoint 和 `RUN_ROOT`。一端取得 controller 角色，另一端运行冻结对手及 Guard。两端需能访问共享目录和服务端口。
+
+除通用参数外，还需设置：
+
+- `BASE_MULTIMODAL_MODEL`：原始 Qwen checkpoint。
+- `SFT_CHECKPOINT`：包含 `hf_model/` 的 SFT checkpoint 目录。
+- `VERL_SNAPSHOT_SOURCE`：兼容的 VERL 包或源码目录。
+- `CUDA_VISIBLE_DEVICES`、`ACTIVE_GPUS`、`OPPONENT_TENSOR_PARALLEL_SIZE`。
+- `PPO_MICRO_BATCH_SIZE_PER_GPU`、`PPO_MAX_TOKEN_LEN_PER_GPU`。
+- `GUARD_GPU_MEMORY_UTILIZATION`、`OPPONENT_GPU_MEMORY_UTILIZATION`。
 
 ```bash
-python -m magic_model_support.scripts.prepare_ministral_reasoning_sft \
-  --input /data/sft-source.json --output /data/sft-train.json \
-  --system-prompt-file /models/Ministral-3-14B-Reasoning-2512/SYSTEM_PROMPT.txt
+bash magic_model_support/scripts/run_qwen_rl.sh
 ```
 
-输入为 JSON 数组，记录包含 `instruction`、`input`、`system` 和 `output`。转换器只改变序列化格式。SFT 入口遇到超长记录时会报错，需明确调整 `max_length` 或输入数据。
+controller 创建基座文本视图，通过共享协调目录请求对手服务，执行一个角色区块，合并 checkpoint，再切换对手。完成区块后需要重新启动时，使用 `RESUME_RUN_ROOT`、`RESUME_MAGIC_STEP`，并为新任务提供新的 `RUN_ROOT` 和协调目录。每个角色保留最新 merged 模型，raw checkpoint 按入口配置保留。模型视图链接的源文件需一直可访问。
 
-修改 `examples/qwen-sft.json` 或 `examples/ministral-sft.json` 后启动：
+## Ministral RL
+
+在独占主机上为 active policy 和 frozen opponent 分配不同的 GPU 集合。显式分配的显存比例允许时，Guard 可以与服务 GPU 共置。
+
+除通用参数外，还需设置：
+
+- `BASE_SOURCE_MODEL`：原始 Ministral Reasoning checkpoint。
+- `SFT_CHECKPOINT_OVERRIDE`：包含 `hf_model/` 的 SFT checkpoint；也可使用带有 `latest_checkpoint.txt` 的 `SFT_ROOT`。
+- `REASONING_SYSTEM_PROMPT_FILE`：默认取基座目录的 `SYSTEM_PROMPT.txt`。
+- `EXPECTED_CUDA_VISIBLE_DEVICES` 及与之相同的 `CUDA_VISIBLE_DEVICES`。
+- `GUARD_CUDA_VISIBLE_DEVICES`、`OPPONENT_CUDA_VISIBLE_DEVICES`、`ACTIVE_CUDA_VISIBLE_DEVICES`、`ACTIVE_GPUS`、`OPPONENT_TENSOR_PARALLEL_SIZE`。
+- `GUARD_GPU_MEMORY_UTILIZATION`、`OPPONENT_GPU_MEMORY_UTILIZATION`。
+- `PPO_MICRO_BATCH_SIZE_PER_GPU`、`MAX_PROMPT_LENGTH`、`MAX_RESPONSE_LENGTH`。
+- `OPPONENT_MAX_RESAMPLES`：对手没有可见回答时，最多额外尝试的次数。
 
 ```bash
-torchrun --standalone --nproc-per-node=4 \
-  -m magic_model_support.train_sft --config magic_model_support/examples/qwen-sft.json
-# Ministral 改用 ministral-sft.json。
+bash magic_model_support/scripts/run_ministral_rl.sh
 ```
 
-示例采用 FSDP 全分片。GPU 数、micro-batch、梯度累积、精度和保存频率通过 Hugging Face `training_args` 配置。单卡可移除 `fsdp`、`fsdp_config` 字段并使用 `python` 启动。需要恢复时，将 `resume_from_checkpoint` 设置为 Trainer checkpoint 目录。
+脚本依次启动 Guard 和冻结对手、等待服务就绪、执行当前角色、合并并规范 checkpoint，再切换角色。同一任务在完成的角色边界恢复时，设置 `RESUME_AFTER_MAGIC_STEP`。attacker 保留最新产物；defender 产物保留，不执行基于 benchmark 的选优。导出规范工具使用单个 `model.safetensors` 文件，保留独立 LM head。
 
-最终 HF 导出位于 `<output_dir>/hf_model`；Trainer checkpoint 还保存优化器与学习率调度器状态。SFT 示例的学习率和 epoch 数参考仓库已有的全参数 SFT 示例，调用方可以调整。
+## Rollout 行为
 
-## MAGIC RL
+当前训练角色的 token 和 log probability 由 VERL rollout engine 生成；冻结对手和 Guard 通过 OpenAI 兼容服务调用。Qwen 转交完整解码输出；Ministral 先分离原生 reasoning 和可见回答，再转交或评分。
 
-可以直接使用上游格式的 parquet，也可转换 JSONL：每条记录提供 `attacker_prompt`（完整改写任务）和 `seed_prompt`（原始问题）。
+对手按指定上限重采样；仍无可见回答时，原始 reward 为 0，该分数仍参与 GRPO 归一化。奖励按单条轨迹计算；这个 AgentLoop 不实现上游 reward manager 中单独的组内无效 attacker 修正。
 
-```bash
-python -m magic_model_support.prepare_rl_data \
-  --input /data/rl-train.jsonl --output /data/train.parquet
-```
-
-单独转换调用方选择的验证数据。转换器不抽样、不划分数据。直接使用 parquet 时，需包含 `prompt`、`data_source`、`reward_model` 和 `extra_info.raw_prompt`。
-
-在独立的 Guard 主机上启动 Qwen3Guard，或提供已有的 OpenAI 兼容接口：
-
-```bash
-CUDA_VISIBLE_DEVICES=0 vllm serve /models/Qwen3Guard-Gen-8B \
-  --served-model-name Qwen3Guard-Gen-8B --port 8000
-```
-
-修改 `examples/qwen-rl.json` 或 `examples/ministral-rl.json`：设置 `guard.base_url` 和 `guard.model`；若接口需要鉴权，将密钥放入 `guard.api_key_env` 指定的环境变量。无需鉴权时移除 `api_key_env`。Guard 资源应与 active/opponent 使用的 GPU 分开。
-
-```bash
-python -m magic_model_support.train_rl --config magic_model_support/examples/qwen-rl.json
-# 恢复同一个任务：
-python -m magic_model_support.train_rl --config magic_model_support/examples/qwen-rl.json --resume
-```
-
-该入口管理单个本地节点，active policy 和 frozen opponent 使用互不重叠的 GPU 集合。流程依次启动冻结对手服务、执行当前角色的 VERL 更新、导出更新后的模型，再切换角色。程序只终止自己创建的子进程。
-
-`state.json` 指向最新导出的两个模型。转换完成后才原子发布导出目录；若在导出阶段中断，可恢复并继续导出，不重复已保存的更新区块。已有 checkpoint 会被保留。
-
-默认算法参数来自 `scripts/rl/separated/grpo_public.sh`：defender 先更新，每个区块 15 步，合计 300 步；GRPO 每组 4 个样本，batch 64，mini-batch 32，学习率 `1e-6`，不使用 KL 项。harm、refusal、format 权重分别为 1、0.5、1，与公开脚本默认值一致。这些字段都可以在 JSON 中显式设置。
-
-`micro_batch_size_per_gpu` 必须由调用方指定。`verl_overrides` 接受后端执行参数的 Hydra override；模型路径、GRPO、checkpoint 状态和角色调度由入口统一管理，优先于这些 override。
-
-两个角色均保存并恢复 model、optimizer 和 extra 状态。现代 AgentLoop 使用公开的单轮交互 prompt 和可见改写内容，Ministral 使用原生 reasoning 序列化。无效 attacker 输出的任务奖励在 GRPO 归一化前按公开的组内有效样本均值处理，格式惩罚单独保留。未完成的 active 输出采用公开 reward manager 的 reward mask 处理；缺少可见回答时不计算任务得分；不执行输出重采样。Guard 格式错误和网络请求错误会中止当前区块。
-
-这是现代 VERL 执行入口，原有 `separated_trainer` 保持不变。模型补丁和原生格式细节见[模型适配说明](README.zh-CN.md)。
-
-## 推理服务
-
-修改对应模型的 service 示例，将 `model_path` 设置为基座模型、SFT 导出或 RL 导出路径：
-
-```bash
-python -m magic_model_support.serve --config magic_model_support/examples/qwen-serve.json
-python -m magic_model_support.serve --config magic_model_support/examples/ministral-serve.json
-```
-
-Qwen 服务会自动创建临时服务视图。Ministral 使用 `--tokenizer-mode mistral` 和原生 reasoning parser；模型目录或显式 `tokenizer_path` 中需有 `tekken.json`。训练导出器会保留源 checkpoint 中已有的该文件。
-
-需要不经过 reasoning parser 的原始 completion 时，使用 `--raw`；RL 对手服务采用此模式。服务位置和显存由 `cuda_visible_devices`、`tensor_parallel_size`、`max_model_len` 和 `gpu_memory_utilization` 控制。
-
-## 评测
-
-评测输入是 JSONL，每条记录具有唯一 `id`，并提供 `prompt` 或 OpenAI 格式的 `messages`。可选的 `reference` 启用精确字符串匹配准确率。Ministral 需设置官方 `system_prompt_file` 和 `tokenizer_mode="mistral"`，以正确序列化 system prompt 中的 reasoning 示例。
-
-```bash
-python -m magic_model_support.evaluate --config magic_model_support/examples/qwen-eval.json
-# Ministral 改用 ministral-eval.json。
-```
-
-`generation` 中的参数直接传给生成接口。逐条结果记录回答、独立 reasoning、结束原因和有效性。只有非空回答且 `finish_reason="stop"` 时才进入评分。相邻的 `.metrics.json` 记录 total、valid、invalid、coverage，以及有参考答案的有效样本上的精确匹配准确率。输出需使用新文件名。
-
-若需要 API judge，在配置中增加 `judge` 对象，包含 `endpoint`、`generation` 和 `prompt_file`。调用方的模板可以使用 `{prompt}`、`{response}`、`{reference}`，并要求 judge 返回带有有限数值 `score` 的 JSON 对象。评测器保存判断结果并汇总有效回答的平均分；评分标准和量表由调用方定义。仓库已有的 benchmark 专用评测器也可连接所启动的 OpenAI 接口。
+`serve_magic_opponent.sh` 和 `serve_qwen3guard.sh` 提供训练入口所需的服务启动和就绪协议。本模块不提供独立 benchmark 或 API-judge 评测命令。

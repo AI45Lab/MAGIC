@@ -45,9 +45,9 @@ def main() -> None:
             f"expected qwen3_5 outer config, found {outer_config.get('model_type')!r}"
         )
     # Keep the outer Qwen3_5Config type required by vLLM's OpenAI renderer,
-    # and use the wrapper loader with the opt-in prefix adapter for both
-    # plain text exports and framework-prefixed merged checkpoints.
-    outer_config["architectures"] = ["Qwen3_5ForConditionalGeneration"]
+    # but select the text-only implementation whose parameter names match the
+    # SFT checkpoint (model.* rather than language_model.model.*).
+    outer_config["architectures"] = ["Qwen3_5ForCausalLM"]
     outer_config["text_config"] = text_config
 
     single_weights = text_model / "model.safetensors"

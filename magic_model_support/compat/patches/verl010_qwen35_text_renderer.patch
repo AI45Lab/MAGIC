@@ -1,6 +1,18 @@
 --- vllm_async_server.py.orig
 +++ vllm_async_server.py
-@@ -444,6 +444,9 @@
+@@ -434,5 +434,11 @@
+ 
+     async def run_server(self, args: argparse.Namespace):
++        # Colocated TP=1 servers otherwise race between probing an open
++        # TCPStore port and binding it in their EngineCore worker.  Stagger
++        # config creation by the stable rollout replica rank so a selected
++        # port is already bound before the next server probes for one.
++        await asyncio.sleep(self.replica_rank * 3)
++
+         engine_args = AsyncEngineArgs.from_cli_args(args)
+         usage_context = UsageContext.OPENAI_API_SERVER
+         vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+@@ -444,6 +450,9 @@
          if "disable_log_stats" in fn_args:
              kwargs["disable_log_stats"] = engine_args.disable_log_stats
  

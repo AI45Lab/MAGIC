@@ -90,11 +90,10 @@ pip install -r requirements.txt
 
 ## Additional model support
 
-[Qwen3.6-27B and Ministral model adapters](magic_model_support/README.md)
-([中文说明](magic_model_support/README.zh-CN.md)) provide model loading,
-chat-template, checkpoint-conversion, and runtime compatibility utilities.
-[Training, serving, and evaluation commands](magic_model_support/WORKFLOWS.md)
-([中文](magic_model_support/WORKFLOWS.zh-CN.md)) are available for both model families.
+[Qwen3.6-27B and Ministral support](magic_model_support/README.md)
+([中文说明](magic_model_support/README.zh-CN.md)) includes model compatibility
+utilities and [SFT/MAGIC training entry points](magic_model_support/WORKFLOWS.md)
+([中文](magic_model_support/WORKFLOWS.zh-CN.md)).
 
 # ✈️ Training & Evalution
 

@@ -6,11 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import tempfile
 from pathlib import Path
 
 from safetensors import safe_open
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 
 OLD_PREFIX = "model.language_model.model."
@@ -34,51 +33,93 @@ def atomic_json(path: Path, payload: dict) -> None:
 
 
 def normalize(model_dir: Path) -> dict[str, object]:
+    weights_path = model_dir / "model.safetensors"
     config_path = model_dir / "config.json"
-    config = json.loads(config_path.read_text())
-    index_path = model_dir / "model.safetensors.index.json"
-    if index_path.is_file():
-        locations = json.loads(index_path.read_text())["weight_map"]
-    else:
-        with safe_open(model_dir / "model.safetensors", framework="pt", device="cpu") as handle:
-            locations = {name: "model.safetensors" for name in handle.keys()}
-    selected = {}
-    renamed = 0
-    for name, shard in locations.items():
-        mapped = LM_HEAD_KEY if name in LM_HEAD_ALIASES else (NEW_PREFIX + name[len(OLD_PREFIX):] if name.startswith(OLD_PREFIX) else name)
-        if mapped in selected:
-            other_name, other_shard = selected[mapped]
-            with safe_open(model_dir / shard, framework="pt", device="cpu") as left, safe_open(model_dir / other_shard, framework="pt", device="cpu") as right:
-                if not left.get_tensor(name).equal(right.get_tensor(other_name)):
-                    raise RuntimeError(f"conflicting weights map to {mapped}")
-        else:
-            selected[mapped] = (name, shard)
-        renamed += int(mapped != name)
-    if not ({EMBED_KEY, TEXT_EMBED_KEY} & selected.keys()):
-        raise KeyError("missing text embedding weight")
-    if LM_HEAD_KEY not in selected:
-        raise RuntimeError("missing independent LM head; embeddings cannot replace the output head")
+    if not weights_path.is_file() or not config_path.is_file():
+        raise FileNotFoundError(f"incomplete merged model: {model_dir}")
+    if (model_dir / "model.safetensors.index.json").exists():
+        raise RuntimeError("sharded merged safetensors are not supported by this normalizer")
+
+    temporary_weights = weights_path.with_name(".model.safetensors.normalizing.tmp")
+    temporary_weights.unlink(missing_ok=True)
+
+    with safe_open(weights_path, framework="pt", device="cpu") as handle:
+        input_keys = set(handle.keys())
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     config["tie_word_embeddings"] = False
-    if "text_config" in config:
-        config["text_config"]["tie_word_embeddings"] = False
-    if renamed:
-        total_size, weight_map = 0, {}
-        with tempfile.TemporaryDirectory(prefix=".normalize-", dir=model_dir) as temporary:
-            for shard in sorted({shard for _, shard in selected.values()}):
-                with safe_open(model_dir / shard, framework="pt", device="cpu") as handle:
-                    weights = {mapped: handle.get_tensor(name) for mapped, (name, filename) in selected.items() if filename == shard}
-                save_file(weights, Path(temporary) / shard, metadata={"format": "pt"})
-                total_size += sum(t.numel() * t.element_size() for t in weights.values())
-                weight_map.update({name: shard for name in weights})
-                del weights
-            for shard in set(weight_map.values()):
-                os.replace(Path(temporary) / shard, model_dir / shard)
-            if index_path.is_file():
-                atomic_json(index_path, {"metadata": {"total_size": total_size}, "weight_map": weight_map})
+    text_config = config.get("text_config")
+    if isinstance(text_config, dict):
+        text_config["tie_word_embeddings"] = False
+
+    if (
+        (EMBED_KEY in input_keys or TEXT_EMBED_KEY in input_keys)
+        and LM_HEAD_KEY in input_keys
+        and not any(name.startswith(OLD_PREFIX) for name in input_keys)
+        and not (input_keys & LM_HEAD_ALIASES)
+    ):
+        atomic_json(config_path, config)
+        result = {
+            "model_dir": str(model_dir),
+            "renamed_weights": 0,
+            "added_lm_head": False,
+            "weight_count": len(input_keys),
+            "status": "already_normalized",
+        }
+        print(json.dumps(result, ensure_ascii=False), flush=True)
+        return result
+
+    weights = load_file(weights_path, device="cpu")
+    normalized = {}
+    renamed = 0
+    for name, tensor in weights.items():
+        if name in LM_HEAD_ALIASES:
+            new_name = LM_HEAD_KEY
+        else:
+            new_name = NEW_PREFIX + name[len(OLD_PREFIX) :] if name.startswith(OLD_PREFIX) else name
+        if new_name in normalized:
+            if not normalized[new_name].equal(tensor):
+                raise RuntimeError(
+                    f"conflicting weights map to {new_name}; refusing an ambiguous LM head"
+                )
+            renamed += int(new_name != name)
+            continue
+        normalized[new_name] = tensor
+        renamed += int(new_name != name)
+
+    embed_key = TEXT_EMBED_KEY if TEXT_EMBED_KEY in normalized else EMBED_KEY
+    if embed_key not in normalized:
+        raise KeyError(
+            f"missing required embedding weight; expected {TEXT_EMBED_KEY} or {EMBED_KEY}"
+        )
+    added_lm_head = LM_HEAD_KEY not in normalized
+    if added_lm_head:
+        raise RuntimeError(
+            "merged Ministral checkpoint has no independent LM head; refusing to clone "
+            "embeddings because this pipeline trains an untied output head"
+        )
+
+    save_file(normalized, temporary_weights, metadata={"format": "pt"})
+    with safe_open(temporary_weights, framework="pt", device="cpu") as handle:
+        output_keys = set(handle.keys())
+    if embed_key not in output_keys or LM_HEAD_KEY not in output_keys:
+        raise RuntimeError("normalized safetensors failed required-key validation")
+    if any(name.startswith(OLD_PREFIX) for name in output_keys):
+        raise RuntimeError("normalized safetensors still contain the legacy nested prefix")
+    if output_keys & LM_HEAD_ALIASES:
+        raise RuntimeError("normalized safetensors still contain an LM-head alias")
+    os.replace(temporary_weights, weights_path)
+
     atomic_json(config_path, config)
-    result = {"model_dir": str(model_dir), "renamed_weights": renamed, "added_lm_head": False,
-              "weight_count": len(selected), "status": "normalized" if renamed else "already_normalized"}
-    print(json.dumps(result), flush=True)
+
+    result = {
+        "model_dir": str(model_dir),
+        "renamed_weights": renamed,
+        "added_lm_head": False,
+        "weight_count": len(output_keys),
+        "status": "normalized",
+    }
+    print(json.dumps(result, ensure_ascii=False), flush=True)
     return result
 
 

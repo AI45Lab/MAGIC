@@ -1,173 +1,145 @@
-# Training, serving, and evaluation
+# Qwen and Ministral training entry points
 
 [中文说明](WORKFLOWS.zh-CN.md)
 
-The commands below support Qwen3.6-27B and Ministral-3-14B-Reasoning-2512.
-Run them from the repository root. Edit the JSON examples to supply local model
-and data paths, output paths, and GPU resources. Example resource assignments
-are configurable; model memory requirements depend on context and batch size.
+These entry points use native PyTorch FSDP for SFT and modern VERL for alternating
+MAGIC updates. Use dedicated Linux/CUDA hosts: the RL scripts restart the local
+Ray processes. Run commands from the repository root and supply absolute paths.
+Model and data preparation is performed by the caller. Supply settings through
+exported environment variables (`export NAME=value`) or inline environment
+assignments on the launch command.
 
-## Environment
+## Runtime
 
-Use Python 3.12 on Linux with CUDA and PyTorch 2.10.0. Install the modern runtime
-separately from the original vendored VERL environment:
+The compatibility layer targets vLLM 0.18.0, PyTorch 2.10, Transformers 5 model
+APIs, and VERL revision `5ba5f2f51281522150a6c1c87e3f841d1d220042`
+(`0.10.0.dev0`). Use the corresponding isolated runtime, not the vendored
+`src/verl` import path. Transformers 5 exceeds vLLM 0.18.0's declared
+`transformers<5` bound; this combination requires the provided compatibility
+patches rather than relying on dependency resolution alone.
 
-```bash
-python -m pip install vllm==0.18.0
-python -m pip install transformers==5.5.3 \
-  'verl @ git+https://github.com/volcengine/verl.git@5ba5f2f51281522150a6c1c87e3f841d1d220042' \
-  'ray[default]==2.54.1' accelerate httpx pyarrow
-python -m pip install flash-attn==2.8.3 --no-build-isolation
-
-python -m magic_model_support.setup_runtime --model-family qwen
-# Or: python -m magic_model_support.setup_runtime --model-family ministral
-```
-
-Transformers 5.5.3 provides the model APIs required by this path. Installing it
-overrides vLLM 0.18.0's declared `transformers<5` bound, so `pip check` will report
-that metadata conflict. The compatibility patches target these exact versions;
-do not substitute MAGIC's vendored VERL or silently upgrade the backend.
-`setup_runtime` modifies the installed backend source in this dedicated environment.
-The two patch sets can be applied sequentially when both families share it.
+The Qwen launcher applies patches to a copy of `VERL_SNAPSHOT_SOURCE`; set that
+variable to an installed VERL package directory or a compatible source snapshot.
+The Ministral launcher patches the backend files in its dedicated environment.
+Patch reapplication accepts an already-patched source and rejects a mismatched one.
 
 ## SFT
 
-For Qwen, first export the language model:
+Provide prepared JSON arrays with `instruction`, `input`, `system`, and `output`.
+Qwen uses literal `<think>...</think><answer>...</answer>` assistant targets.
+Ministral uses `[THINK]...[/THINK]answer` and its official reasoning system prompt
+in the prepared records. The launchers do not create, split, or select records.
+
+Set these environment variables before launching either family:
+
+| Variable | Meaning |
+|---|---|
+| `MODEL_PATH` | Original model checkpoint |
+| `TRAIN_FILE`, `VALIDATION_FILE` | Prepared SFT JSON arrays |
+| `OUTPUT_DIR` | Checkpoint output directory |
+| `NPROC_PER_NODE` | Number of local training processes |
+| `CUTOFF_LEN` | Tokenization cutoff; longer examples are truncated |
+| `GRADIENT_ACCUMULATION_STEPS` | Gradient accumulation count |
+| `SAVE_STEPS`, `EVAL_STEPS` | Checkpoint and validation-loss intervals |
+| `SEED` | Training seed |
 
 ```bash
-python -m magic_model_support.scripts.prepare_qwen35_text_only_view \
-  --source /models/Qwen3.6-27B --output /models/qwen-text
+bash magic_model_support/scripts/run_qwen_sft.sh
+# Or:
+bash magic_model_support/scripts/run_ministral_sft.sh
 ```
 
-For Ministral Reasoning, convert the chosen SFT file and repeat for any separate
-validation file:
+Optional parameters include `EPOCHS`, `MICRO_BATCH_SIZE`, `LEARNING_RATE`,
+`WEIGHT_DECAY`, `WARMUP_RATIO`, `SAVE_TOTAL_LIMIT`, and `CPU_OFFLOAD`.
+The output is `checkpoint-<step>/hf_model`, with `latest_checkpoint.txt` identifying
+the latest export. The same FSDP forward, loss, optimizer, validation-loss, and
+model-export loop is used for both families with their respective model loaders.
+
+## Shared RL inputs
+
+Set `TRAIN_FILE` and `VAL_FILE` to prepared MAGIC-compatible parquet files,
+`GUARD_MODEL` to a local Qwen3Guard checkpoint, and `RUN_ROOT` to the run's output
+directory. Use a unique `RUN_ID`. No fixed dataset size or benchmark layout is
+required by these launchers.
+
+The roles alternate defender first. `TOTAL_MAGIC_STEPS` must be divisible by
+`2 * SWITCH_FREQUENCY`. `FORMAT_REWARD_VALUE`, `DATA_SEED`, and `ROLLOUT_SEED`
+are supplied explicitly. Backend micro-batches and service memory allocations
+must be chosen for the available GPUs.
+
+`CHECKPOINT_SAVE_CONTENTS` and `CHECKPOINT_LOAD_CONTENTS` accept VERL JSON lists,
+for example `["model"]` or `["model","optimizer","extra"]`. Choose contents
+for the required save/load behavior. Load settings must match the state available
+in the checkpoint. When Qwen load contents are not explicitly set, its launcher
+detects whether optimizer and extra-state files are available.
+
+## Qwen RL
+
+Run the same script on two dedicated hosts sharing the checkout, checkpoints,
+and `RUN_ROOT`. One claims the controller role; the other hosts the frozen
+opponent and Guard. The hosts must reach the service ports and shared files.
+
+Required model/runtime variables:
+
+- `BASE_MULTIMODAL_MODEL`: original Qwen checkpoint.
+- `SFT_CHECKPOINT`: SFT checkpoint directory containing `hf_model/`.
+- `VERL_SNAPSHOT_SOURCE`: compatible VERL package/source directory.
+- `CUDA_VISIBLE_DEVICES`, `ACTIVE_GPUS`, `OPPONENT_TENSOR_PARALLEL_SIZE`.
+- `PPO_MICRO_BATCH_SIZE_PER_GPU`, `PPO_MAX_TOKEN_LEN_PER_GPU`.
+- `GUARD_GPU_MEMORY_UTILIZATION`, `OPPONENT_GPU_MEMORY_UTILIZATION`.
 
 ```bash
-python -m magic_model_support.scripts.prepare_ministral_reasoning_sft \
-  --input /data/sft-source.json --output /data/sft-train.json \
-  --system-prompt-file /models/Ministral-3-14B-Reasoning-2512/SYSTEM_PROMPT.txt
+bash magic_model_support/scripts/run_qwen_rl.sh
 ```
 
-Inputs are JSON arrays of `instruction`, `input`, `system`, and `output` objects.
-The converter changes serialization only. Overlong records cause an error in the
-SFT runner; adjust `max_length` or provide compatible data explicitly.
+The controller creates the base text view, requests opponent services through the
+shared coordination directory, runs a role block, merges its checkpoint, and
+switches the opponent. For a completed-block restart, provide `RESUME_RUN_ROOT`
+and `RESUME_MAGIC_STEP` with a fresh `RUN_ROOT`/coordination directory. The launcher
+retains the latest merged model per role and uses its configured raw-checkpoint
+retention. Source files used by linked model views must remain accessible.
 
-Edit `examples/qwen-sft.json` or `examples/ministral-sft.json`, then run:
+## Ministral RL
+
+Use a dedicated host with separate active-policy and opponent GPU sets. Guard may
+share a service GPU if its explicitly configured memory allocation permits it.
+
+Required model/runtime variables:
+
+- `BASE_SOURCE_MODEL`: original Ministral Reasoning checkpoint.
+- `SFT_CHECKPOINT_OVERRIDE`: SFT checkpoint containing `hf_model/`; alternatively
+  use `SFT_ROOT` with `latest_checkpoint.txt`.
+- `REASONING_SYSTEM_PROMPT_FILE`: defaults to the base model's `SYSTEM_PROMPT.txt`.
+- `EXPECTED_CUDA_VISIBLE_DEVICES` and matching `CUDA_VISIBLE_DEVICES`.
+- `GUARD_CUDA_VISIBLE_DEVICES`, `OPPONENT_CUDA_VISIBLE_DEVICES`,
+  `ACTIVE_CUDA_VISIBLE_DEVICES`, `ACTIVE_GPUS`, `OPPONENT_TENSOR_PARALLEL_SIZE`.
+- `GUARD_GPU_MEMORY_UTILIZATION`, `OPPONENT_GPU_MEMORY_UTILIZATION`.
+- `PPO_MICRO_BATCH_SIZE_PER_GPU`, `MAX_PROMPT_LENGTH`, `MAX_RESPONSE_LENGTH`.
+- `OPPONENT_MAX_RESAMPLES`: maximum additional attempts after an opponent output
+  with no visible answer.
 
 ```bash
-torchrun --standalone --nproc-per-node=4 \
-  -m magic_model_support.train_sft --config magic_model_support/examples/qwen-sft.json
-# Use ministral-sft.json for Ministral.
+bash magic_model_support/scripts/run_ministral_rl.sh
 ```
 
-The examples use FSDP full sharding. GPU count, micro-batch size, accumulation,
-precision, and checkpoint frequency are standard Hugging Face `training_args`.
-A single-GPU invocation can omit the `fsdp` and `fsdp_config` keys and use `python`.
-Set `resume_from_checkpoint` to a Trainer checkpoint directory to resume.
-The final HF export is `<output_dir>/hf_model`; Trainer checkpoints also preserve
-optimizer and scheduler state. SFT learning rate and epoch examples follow the
-repository's full-SFT examples and remain caller-configurable.
+The script starts Guard and the frozen opponent, waits for readiness, executes the
+active role, merges/normalizes the checkpoint, and switches roles. Set
+`RESUME_AFTER_MAGIC_STEP` to a completed role boundary when restarting the same
+run. The latest attacker artifacts are retained. Defender artifacts are kept
+without benchmark-based selection. The export normalizer expects a single
+`model.safetensors` file and preserves the independent LM head.
 
-## MAGIC RL
+## Rollout behavior
 
-Supply prepared upstream-compatible parquet, or convert JSONL rows containing
-`attacker_prompt` (the full rewriting task) and `seed_prompt` (the original query):
+The active role's tokens and log probabilities come from VERL's rollout engine;
+the frozen opponent and Guard use OpenAI-compatible services. Qwen forwards its
+complete decoded output. Ministral separates native reasoning from the visible
+answer before forwarding/scoring it. Opponent resampling follows the configured
+limit; if no visible answer is available, the raw reward is zero. This raw score
+still participates in GRPO normalization. Rewards are computed per trajectory;
+this AgentLoop does not implement the separate group-level invalid-attacker
+correction in the upstream reward manager.
 
-```bash
-python -m magic_model_support.prepare_rl_data \
-  --input /data/rl-train.jsonl --output /data/train.parquet
-```
-
-Convert a caller-selected validation file separately. The converter neither
-samples nor splits data. Upstream parquet must contain `prompt`, `data_source`,
-`reward_model`, and `extra_info.raw_prompt`.
-
-Run Qwen3Guard on a separate Guard host, or supply an existing OpenAI-compatible
-service:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 vllm serve /models/Qwen3Guard-Gen-8B \
-  --served-model-name Qwen3Guard-Gen-8B --port 8000
-```
-
-Edit `examples/qwen-rl.json` or `examples/ministral-rl.json`. Set `guard.base_url`,
-`guard.model`, and an environment variable named by `guard.api_key_env` if needed;
-omit `api_key_env` for a service without authentication. Keep Guard resources
-separate from the configured active/opponent devices.
-
-```bash
-python -m magic_model_support.train_rl --config magic_model_support/examples/qwen-rl.json
-# To continue the same run:
-python -m magic_model_support.train_rl --config magic_model_support/examples/qwen-rl.json --resume
-```
-
-This entry point manages one local node with separate active-policy and frozen-
-opponent GPU sets. It starts the frozen opponent service, runs the active VERL
-block, exports the updated policy, and switches roles. It terminates only its own
-child processes. `state.json` identifies the latest exported models. Exports are
-published atomically after conversion; an interrupted export can be resumed
-without repeating an already checkpointed block. Existing checkpoints are kept.
-
-The default schedule and algorithm values follow `scripts/rl/separated/grpo_public.sh`:
-defender first, 15 updates per block, 300 combined updates, GRPO group size 4,
-batch 64, mini-batch 32, learning rate `1e-6`, and no KL term. Reward weights are
-harm 1, refusal 0.5, format 1, matching the public script defaults. These fields
-can be set explicitly in the JSON configuration. `micro_batch_size_per_gpu` is
-required, and `verl_overrides` accepts Hydra overrides for backend execution
-settings. Core model paths, GRPO, checkpoint state, and role scheduling are owned
-by the wrapper and take precedence over those overrides.
-
-Both roles save/load model, optimizer, and extra state. The modern AgentLoop uses
-the public single-exchange prompts and visible rewritten query, with native
-reasoning serialization for Ministral. Invalid attacker task rewards use the
-public group's mean valid task reward before GRPO normalization; format penalties
-remain separate. Unfinished active responses are masked at the reward level as
-in the public manager. Missing visible answers have no task score. No output is
-resampled. Malformed Guard responses and transport errors stop the block.
-
-This is a modern VERL execution entry point; the original `separated_trainer`
-remains available unchanged. Backend patch requirements and native reasoning
-formats are described in [model adapters](README.md).
-
-## Serving
-
-Edit the family-specific service example, setting `model_path` to a base model,
-an SFT export, or an RL export:
-
-```bash
-python -m magic_model_support.serve --config magic_model_support/examples/qwen-serve.json
-python -m magic_model_support.serve --config magic_model_support/examples/ministral-serve.json
-```
-
-The Qwen service builds its temporary serving view automatically. Ministral uses
-`--tokenizer-mode mistral` with its native reasoning parser; `tekken.json` must be
-available in the model directory or at an explicit `tokenizer_path`. The training
-exporters preserve that file when it exists in the source checkpoint. For raw
-completion output without a reasoning parser, use `--raw`; RL uses this mode.
-`cuda_visible_devices`, `tensor_parallel_size`, `max_model_len`, and
-`gpu_memory_utilization` control service placement and memory.
-
-## Evaluation
-
-The evaluator accepts JSONL rows with a unique `id` and either `prompt` or
-OpenAI-format `messages`. An optional `reference` enables exact-string accuracy.
-For Ministral, set `system_prompt_file` to the official prompt and
-`tokenizer_mode` to `mistral` to serialize its structured reasoning example.
-
-```bash
-python -m magic_model_support.evaluate --config magic_model_support/examples/qwen-eval.json
-# Use ministral-eval.json for Ministral.
-```
-
-Generation parameters are passed from `generation` to the endpoint. Results
-include response, separated reasoning, finish reason, and validity. Only a
-nonempty answer with finish reason `stop` is valid for scoring. The adjacent
-`.metrics.json` contains total/valid/invalid counts, coverage, and exact-match
-accuracy over referenced valid answers. Outputs must use a new filename.
-
-For an API judge, add a `judge` object containing `endpoint`, `generation`, and
-`prompt_file`. The caller's template can use `{prompt}`, `{response}`, and
-`{reference}`. Require the judge to return a JSON object with a finite numeric
-`score`; the evaluator records the judgement and averages scores over valid
-answers. The caller defines the criterion and scale. Existing benchmark-specific
-evaluators may also target the served OpenAI endpoint.
+The scripts `serve_magic_opponent.sh` and `serve_qwen3guard.sh` implement the
+service launch/readiness protocol used by the training entry points. This
+package does not provide standalone benchmark or API-judge evaluation commands.

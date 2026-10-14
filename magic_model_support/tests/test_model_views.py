@@ -28,6 +28,9 @@ class QwenModelViewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source"
+            reference = root / "reference"
+            reference.mkdir()
+            save_file(expected, reference / "model.safetensors")
             source.mkdir()
             (source / "config.json").write_text(json.dumps({
                 "model_type": "qwen3_5",
@@ -50,7 +53,7 @@ class QwenModelViewTests(unittest.TestCase):
                 source_bytes[filename] = (source / filename).read_bytes()
             (source / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
             output = root / "text"
-            with patch.object(sys, "argv", ["text_view", "--source", str(source), "--output", str(output)]):
+            with patch.object(sys, "argv", ["text_view", "--source", str(source), "--reference-text-model", str(reference), "--output", str(output)]):
                 text_view.main()
             loaded, info = Qwen3_5ForCausalLM.from_pretrained(output, output_loading_info=True)
             self.assertFalse(info["missing_keys"])
@@ -62,7 +65,7 @@ class QwenModelViewTests(unittest.TestCase):
                 service_view.main()
             served_config = json.loads((served / "config.json").read_text())
             self.assertEqual(served_config["model_type"], "qwen3_5")
-            self.assertEqual(served_config["architectures"], ["Qwen3_5ForConditionalGeneration"])
+            self.assertEqual(served_config["architectures"], ["Qwen3_5ForCausalLM"])
             for filename, content in source_bytes.items():
                 self.assertEqual((source / filename).read_bytes(), content)
 
