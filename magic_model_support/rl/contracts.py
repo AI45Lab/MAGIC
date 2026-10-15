@@ -122,19 +122,74 @@ def parse_native_reasoning_response(
     return reasoning, visible, None
 
 
-def format_reward(text: str | None, value: float = 0.5) -> float:
-    candidate = (text or "").strip()
-    angle_tags = ("<think>", "</think>", "<answer>", "</answer>")
-    if tuple(candidate.count(tag) for tag in angle_tags) == (1, 1, 1, 1):
-        pattern = r"^<think>[\s\S]*?</think>\s*<answer>[\s\S]*?</answer>$"
-        return value if re.search(pattern, candidate, re.DOTALL) else -value
+def valid_attacker_format(text: str | None, *, native_reasoning: bool = False) -> bool:
+    """Require exactly one ordered, non-empty reasoning and answer pair."""
 
-    # Ministral-3 Reasoning's native template emits reasoning followed directly
-    # by the final answer; it has no separate [ANSWER] wrapper.
-    if candidate.count("[THINK]") == 1 and candidate.count("[/THINK]") == 1:
-        pattern = r"^\[THINK\][\s\S]*?\[/THINK\]\s*\S[\s\S]*$"
-        return value if re.search(pattern, candidate, re.DOTALL) else -value
-    return -value
+    candidate = (text or "").strip()
+    if native_reasoning:
+        tags = ("[THINK]", "[/THINK]")
+        pattern = r"\[THINK\](.*?)\[/THINK\](.*)"
+    else:
+        tags = ("<think>", "</think>", "<answer>", "</answer>")
+        pattern = r"<think>(.*?)</think>\s*<answer>(.*?)</answer>"
+    if any(candidate.count(tag) != 1 for tag in tags):
+        return False
+    match = re.fullmatch(pattern, candidate, re.DOTALL)
+    return bool(match and all(part.strip() for part in match.groups()))
+
+
+def format_reward(
+    text: str | None, value: float = 0.5, *, native_reasoning: bool = False
+) -> float:
+    return value if valid_attacker_format(text, native_reasoning=native_reasoning) else -value
+
+
+def visible_attack(text: str | None, seed: str = "", *, native_reasoning: bool = False) -> str:
+    """Hide attacker reasoning; malformed tagged output falls back to the seed.
+
+    As in the original trainer, untagged direct answers may be shown to the
+    defender, but are still invalid for the attacker's format/task reward.
+    """
+
+    candidate = (text or "").strip()
+    tags = ("[THINK]", "[/THINK]") if native_reasoning else ("<think>", "</think>", "<answer>", "</answer>")
+    if not any(tag in candidate for tag in tags):
+        return candidate or seed.strip()
+    if not valid_attacker_format(candidate, native_reasoning=native_reasoning):
+        return seed.strip()
+    return split_native_reasoning(candidate)[1] if native_reasoning else extract_answer(candidate)
+
+
+def seed_prompt_from_sample(sample: dict[str, Any]) -> str:
+    extra_info = sample.get("extra_info") or {}
+    for value in (sample.get("seed_prompt"), sample.get("question"), extra_info.get("raw_prompt")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    # raw_prompt contains the attack instructions, not necessarily the seed.
+    return ""
+
+
+def mask_invalid_attacker_task(task, invalid, usable, groups):
+    """Port the original trainer's group-mean correction, before format reward.
+
+    A fixed zero can beat a valid failed attack. Invalid rewrites instead get
+    the mean of usable valid rewrites with the same training uid; an all-invalid
+    group gets zero task reward and still receives the format penalty.
+    """
+
+    task = list(task)
+    if not (len(task) == len(invalid) == len(usable) == len(groups)):
+        raise ValueError("task rewards, validity masks, and groups must have equal lengths")
+    by_group = {}
+    for i, group in enumerate(groups):
+        by_group.setdefault(group, []).append(i)
+    for indices in by_group.values():
+        valid = [task[i] for i in indices if not invalid[i] and usable[i]]
+        fill = sum(valid) / len(valid) if valid else 0.0
+        for i in indices:
+            if invalid[i]:
+                task[i] = fill
+    return task
 
 
 def parse_guard_output(text: str | None) -> tuple[str | None, str | None]:

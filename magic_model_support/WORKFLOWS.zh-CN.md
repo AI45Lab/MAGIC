@@ -88,8 +88,10 @@ bash magic_model_support/scripts/run_ministral_rl.sh
 
 ## Rollout 行为
 
-当前训练角色的 token 和 log probability 由 VERL rollout engine 生成；冻结对手和 Guard 通过 OpenAI 兼容服务调用。Qwen 转交完整解码输出；Ministral 先分离原生 reasoning 和可见回答，再转交或评分。
+当前训练角色的 token 和 log probability 由 VERL rollout engine 生成；冻结对手和 Guard 通过 OpenAI 兼容服务调用。Qwen attacker 只转交 `<answer>` 内容；Ministral attacker 使用 `[THINK]...[/THINK]answer`，转交可见回答。两种格式都要求 reasoning 和回答非空且标签完整、唯一、有序。无标签的直接回答仍可转交，但不满足 attacker 格式要求。异常标签或空输出回退到数据中的原始 seed（`seed_prompt`、`question` 或 `extra_info.raw_prompt`），不把 attacker reasoning 转交给 defender。Defender 输出的原有评分方式保持不变。
 
-对手按指定上限重采样；仍无可见回答时，原始 reward 为 0，该分数仍参与 GRPO 归一化。奖励按单条轨迹计算；这个 AgentLoop 不实现上游 reward manager 中单独的组内无效 attacker 修正。
+原生 reasoning 对手按指定上限重采样。没有可评分回答时，原始任务奖励为 0；attacker 的格式奖励/扣分仍保留。这类未评分样本不用于计算有效任务奖励均值。
+
+两个 RL 入口通过 `MagicGameAgentLoopManager` 汇总所有 worker 的轨迹，在 GRPO 归一化之前，按训练 `uid` 将无效 attacker 的任务奖励替换为同组有效且可评分样本的均值，再加格式扣分。整组均无有效可评分样本时，替换值为 0，但格式扣分仍保留。该规则与 `20260922` 的组内修正一致；不会把固定 0 当作无效 attacker 的最终奖励。自定义入口也必须设置 `actor_rollout_ref.rollout.agent.agent_loop_manager_class=magic_model_support.rl.manager.MagicGameAgentLoopManager`。
 
 `serve_magic_opponent.sh` 和 `serve_qwen3guard.sh` 提供训练入口所需的服务启动和就绪协议。本模块不提供独立 benchmark 或 API-judge 评测命令。

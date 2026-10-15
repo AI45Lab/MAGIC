@@ -132,13 +132,25 @@ without benchmark-based selection. The export normalizer expects a single
 ## Rollout behavior
 
 The active role's tokens and log probabilities come from VERL's rollout engine;
-the frozen opponent and Guard use OpenAI-compatible services. Qwen forwards its
-complete decoded output. Ministral separates native reasoning from the visible
-answer before forwarding/scoring it. Opponent resampling follows the configured
-limit; if no visible answer is available, the raw reward is zero. This raw score
-still participates in GRPO normalization. Rewards are computed per trajectory;
-this AgentLoop does not implement the separate group-level invalid-attacker
-correction in the upstream reward manager.
+the frozen opponent and Guard use OpenAI-compatible services. Qwen attackers
+forward only `<answer>` content; Ministral attackers forward the visible answer
+after `[THINK]...[/THINK]`. Both formats require non-empty reasoning and answers,
+with complete, unique, ordered markers. Untagged direct answers can still be
+forwarded but fail the attacker format check. Malformed tagged or empty attacker
+output falls back to the original seed from `seed_prompt`, `question`, or
+`extra_info.raw_prompt`. Defender scoring retains its existing response handling.
+
+Native-reasoning opponents are resampled up to the configured limit. When no
+response can be scored, the raw task reward is zero, but attacker format rewards
+and penalties still apply. Unscored trajectories do not contribute to group means.
+
+Both launchers use `MagicGameAgentLoopManager` to gather all worker outputs before
+GRPO normalization. As in the `20260922` trainer, an invalid attacker's task reward
+is replaced with the mean of usable, valid attacks with the same training `uid`,
+then its format penalty is added. If no usable valid attack exists in the group,
+the replacement task reward is zero and the format penalty remains. Custom
+launchers must also set
+`actor_rollout_ref.rollout.agent.agent_loop_manager_class=magic_model_support.rl.manager.MagicGameAgentLoopManager`.
 
 The scripts `serve_magic_opponent.sh` and `serve_qwen3guard.sh` implement the
 service launch/readiness protocol used by the training entry points. This

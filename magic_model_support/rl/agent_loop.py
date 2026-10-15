@@ -23,6 +23,9 @@ from magic_model_support.rl.contracts import (
     mistral_reasoning_api_messages,
     parse_native_reasoning_response,
     safety_reward,
+    seed_prompt_from_sample,
+    valid_attacker_format,
+    visible_attack as get_visible_attack,
 )
 
 
@@ -296,6 +299,7 @@ class MagicGameAgentLoop(AgentLoopBase):
             reasoning, visible, issue = parse_native_reasoning_response(raw_text)
             last_finish_reason = finish_reason
             last_diagnostic = {
+                "raw_output": raw_text,
                 "attempts": resamples + 1,
                 "resamples": resamples,
                 "reasoning_chars": len(reasoning),
@@ -386,6 +390,7 @@ class MagicGameAgentLoop(AgentLoopBase):
     ) -> AgentLoopOutput:
         priority = int(priority)
         attacker_template = attacker_template_from_raw_prompt(kwargs["raw_prompt"])
+        seed_prompt = seed_prompt_from_sample(kwargs)
         data_type = str(kwargs.get("data_type") or (kwargs.get("extra_info") or {}).get("data_type") or "")
         metrics: dict[str, Any] = {}
         started = time.monotonic()
@@ -402,7 +407,10 @@ class MagicGameAgentLoop(AgentLoopBase):
                 )
             attacker_reasoning_issue = opponent_diagnostic.get("reasoning_issue")
             opponent_resamples = int(opponent_diagnostic.get("resamples", 0))
-            visible_attack = attacker_output
+            attacker_output = opponent_diagnostic.get("raw_output", attacker_output)
+            visible_attack = get_visible_attack(
+                attacker_output, seed_prompt, native_reasoning=self.native_reasoning
+            )
             if not visible_attack:
                 zero_reward_reason = "frozen_attacker_no_visible_response"
             active_messages = defender_messages(visible_attack)
@@ -426,11 +434,12 @@ class MagicGameAgentLoop(AgentLoopBase):
             attacker_output = active[4]
             attacker_finish = active[5].stop_reason
             if self.native_reasoning:
-                _, visible_attack, attacker_reasoning_issue = (
+                _, _, attacker_reasoning_issue = (
                     parse_native_reasoning_response(attacker_output)
                 )
-            else:
-                visible_attack = attacker_output
+            visible_attack = get_visible_attack(
+                attacker_output, seed_prompt, native_reasoning=self.native_reasoning
+            )
             if not visible_attack:
                 zero_reward_reason = "active_attacker_no_visible_response"
                 defender_output = ""
@@ -449,12 +458,13 @@ class MagicGameAgentLoop(AgentLoopBase):
                 visible_defender = defender_output
                 if not visible_defender:
                     zero_reward_reason = "frozen_defender_no_visible_response"
-            format_component = (
-                format_reward(attacker_output, self.format_weight)
-                if zero_reward_reason is None
-                else 0.0
+            format_component = format_reward(
+                attacker_output, self.format_weight, native_reasoning=self.native_reasoning
             )
 
+        attacker_invalid = not valid_attacker_format(
+            attacker_output, native_reasoning=self.native_reasoning
+        )
         if zero_reward_reason is None:
             with simple_timer("compute_score", metrics):
                 query_guard, response_guard = await self._guard(
@@ -472,19 +482,22 @@ class MagicGameAgentLoop(AgentLoopBase):
             request_label = components.request_label
             response_label = components.response_label
             refusal_label = components.refusal_label
-            reward = (
+            task_reward = (
                 components.total
                 if self.train_role == "defender"
-                else -components.total + format_component
+                else -components.total
             )
         else:
-            reward = 0.0
+            task_reward = 0.0
             reward_harm = 0.0
             reward_refusal = 0.0
             request_label = "SkippedNoVisibleResponse"
             response_label = "SkippedNoVisibleResponse"
             refusal_label = "SkippedNoVisibleResponse"
 
+        # The manager replaces invalid attacker task rewards with the group's
+        # valid mean after all workers finish. Never suppress the format penalty.
+        reward = task_reward + format_component
         token_output = active[5]
         if metrics.get("num_preempted") is None:
             metrics["num_preempted"] = token_output.num_preempted if token_output.num_preempted is not None else -1
@@ -498,6 +511,11 @@ class MagicGameAgentLoop(AgentLoopBase):
             {
                 "magic_train_role": self.train_role,
                 "attacker_output": attacker_output,
+                "visible_attacker_output": visible_attack,
+                "attacker_format_invalid": attacker_invalid,
+                "magic_raw_task_reward": task_reward,
+                "magic_task_reward": task_reward,
+                "magic_task_reward_usable": zero_reward_reason is None,
                 "defender_output": defender_output,
                 "visible_defender_output": visible_defender,
                 "attacker_finish_reason": attacker_finish,

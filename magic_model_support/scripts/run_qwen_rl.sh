@@ -502,6 +502,7 @@ run_block() {
     actor_rollout_ref.rollout.calculate_log_probs=true \
     actor_rollout_ref.rollout.agent.num_workers=8 \
     actor_rollout_ref.rollout.agent.default_agent_loop=magic_game \
+    ++actor_rollout_ref.rollout.agent.agent_loop_manager_class=magic_model_support.rl.manager.MagicGameAgentLoopManager \
     actor_rollout_ref.rollout.agent.agent_loop_config_path="${AGENT_LOOP_CONFIG}" \
     actor_rollout_ref.rollout.val_kwargs.temperature=0 \
     actor_rollout_ref.rollout.val_kwargs.top_p=1 \
