@@ -1,2 +1,5 @@
 src/360-LLaMA-Factory/data/game_cot_harmful.json filter=lfs diff=lfs merge=lfs -text
 src/360-LLaMA-Factory/data/game_cot_benign.json filter=lfs diff=lfs merge=lfs -text
+
+# Unified diff context lines retain their required leading space.
+magic_model_support/compat/patches/*.patch whitespace=-blank-at-eol

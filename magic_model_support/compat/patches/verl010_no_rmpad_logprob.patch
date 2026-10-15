@@ -1,0 +1,61 @@
+--- transformer_impl.py.orig
++++ transformer_impl.py
+@@ -1442,7 +1442,10 @@
+                 # With TP, logits are DTensors sharded on vocab dim; gather for log_softmax.
+                 if isinstance(logits, DTensor):
+                     logits = logits.full_tensor()
+-                logits = logits / temperature.clamp(min=1e-8).to(logits.dtype)
++                # MAGIC compatibility: unit temperature is an exact no-op. Avoid
++                # retaining a second full [batch, sequence, vocab] tensor.
++                if not bool(torch.all(temperature == 1).item()):
++                    logits = logits / temperature.clamp(min=1e-8).to(logits.dtype)
+ 
+                 if calculate_entropy:
+                     if not self.engine_config.entropy_checkpointing:
+@@ -1449,6 +1452,13 @@
+                 if calculate_entropy:
+                     if not self.engine_config.entropy_checkpointing:
+-                        entropy = verl_F.entropy_from_logits(logits)
++                        if self.engine_config.entropy_from_logits_with_chunking:
++                            entropy_shape = logits.shape[:-1]
++                            entropy = self.compute_entropy_from_logits(
++                                logits.reshape(-1, logits.shape[-1]),
++                                chunk_size=self.engine_config.entropy_from_logits_chunk_size,
++                            ).reshape(entropy_shape)
++                        else:
++                            entropy = self.compute_entropy_from_logits(logits)
+                     else:
+                         entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
+ 
+@@ -1457,10 +1467,15 @@
+                     cu_seqlens = input_ids.offsets()
+                     seq_lengths = cu_seqlens.diff()
+                     starts = torch.zeros_like(seq_lengths, dtype=torch.int64)
+-                    logits = torch.nested.narrow(logits, 1, starts, seq_lengths, layout=torch.jagged)
+-                    logits_rmpad = torch.cat([t for t in logits.unbind()])
+                     input_ids_rmpad_rolled = output_args["input_ids_rmpad_rolled"]
++                    from magic_model_support.compat.vllm_weight_patch import (
++                        logprobs_from_padded_logits_by_sequence,
++                    )
+ 
++                    sequence_lengths = [int(value) for value in seq_lengths.cpu().tolist()]
++                    if distillation_use_topk or distillation_only:
++                        raise RuntimeError("MAGIC no-logits-cat patch only supports PPO log-prob mode")
++
+                     # Mirror the use_remove_padding=True branch (see verl#6293).
+                     # No Ulysses SP gather here: this branch is the no-SP path
+                     # (log_probs is also not gathered) and pad_size is only
+@@ -1477,7 +1492,12 @@
+ 
+                     log_probs = None
+                     if not distillation_only:
+-                        log_probs = logprobs_from_logits(logits=logits_rmpad, labels=input_ids_rmpad_rolled)
++                        log_probs = logprobs_from_padded_logits_by_sequence(
++                            logits,
++                            input_ids_rmpad_rolled,
++                            sequence_lengths,
++                            logprobs_from_logits,
++                        )
+ 
+                     # (bsz, j1), for each sample, length of each sample: [real_prompt_length + real_response_length]
+                     if not distillation_only:

@@ -1,0 +1,25 @@
+--- mistral.py
++++ mistral.py
+@@ -106,6 +106,22 @@
+         llama_4_scaling_config: dict[str, int | float | str] | None = getattr(
+             config, "llama_4_scaling", None
+         )
++        # Transformers >=5 stores Ministral-3's Llama-4 query scaling in the
++        # canonical rope_parameters dictionary.  vLLM 0.18 still reads the
++        # legacy top-level llama_4_scaling field, which silently disables the
++        # scaling and makes rollout log probabilities diverge from the actor.
++        if llama_4_scaling_config is None:
++            rope_parameters = getattr(config, "rope_parameters", None)
++            if isinstance(rope_parameters, dict):
++                beta = rope_parameters.get("llama_4_scaling_beta")
++                original_max_position_embeddings = rope_parameters.get(
++                    "original_max_position_embeddings"
++                )
++                if beta is not None and original_max_position_embeddings is not None:
++                    llama_4_scaling_config = {
++                        "beta": beta,
++                        "original_max_position_embeddings": original_max_position_embeddings,
++                    }
+         self.do_llama_4_scaling = llama_4_scaling_config is not None
+         if self.do_llama_4_scaling:
+             assert llama_4_scaling_config is not None
