@@ -16,6 +16,10 @@
 </p>
 
 # 🔥 News
+[Oct. 2026] Thanks to [@Ing1024](https://github.com/Ing1024) for adding support for Qwen3.6 and Ministral models.
+
+[Sept. 2026] Thanks to [@giuliabenintendi](https://github.com/giuliabenintendi) for identifying and fixing reward issues caused by empty chains of thought and invalid attacker outputs.
+
 [Aug. 2026] We added the attacker SFT model weights to Hugging Face: [Llama3.1-8B-Instruct](https://huggingface.co/XiaoyuWen/MAGIC-attacker-sft-Llama3.1-8B-Instruct), [Qwen2.5-7B-Instruct](https://huggingface.co/XiaoyuWen/MAGIC-attacker-sft-Qwen2.5-7B-Instruct), and [Qwen2.5-14B-Instruct](https://huggingface.co/XiaoyuWen/MAGIC-attacker-sft-Qwen2.5-14B-Instruct).
 
 [May. 2026] Our paper have been accepeted by ICML2026!
