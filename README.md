@@ -69,6 +69,9 @@
 		•	Approximates bilevel best-response dynamics
 
 # 🚀 Getting Started
+
+> **Version note:** The setup and training instructions below describe the **20260922 configuration (vLLM 0.8.5)**, preserved in the [20260922-qwen2.5-vllm0.8.5 branch](https://github.com/AI45Lab/MAGIC/tree/20260922-qwen2.5-vllm0.8.5). To try **Qwen3.6-27B or Ministral**, you can switch to [20261015-qwen3.6-mistral-vllm0.18](https://github.com/AI45Lab/MAGIC/tree/20261015-qwen3.6-mistral-vllm0.18) and follow the [new model guide](readme_20261022.md) for the vLLM 0.18 stack in a separate environment. This model support is also available on `main`.
+
 we recommend using cuda12.4 + torch2.6 + python3.10.
 ```bash
 conda create -n magic python=3.10.0
